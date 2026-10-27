@@ -14,7 +14,7 @@
 
 ## 데이터
 - 출처(주소):https://www.koenergy.kr/kosep/gv/nf/dt/nfdt21/main.do?ptSignature=&pageIndex=9&menuCd=FN0912020217&xmlText=&strOrgNo=&strHokiS=&strHokiE=&strDateS=20260927&strDateE=20261027
-- 기간·행 수·열 수:2026/09/30,92행,33열 
+- 기간·행 수·열 수:2026/10/27,92행,33열 
 - 사용한 열:33열
 - 개인 단위 정보 없음 확인: 예
 
