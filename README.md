@@ -13,7 +13,7 @@
 - 20424 정서윤: 나는 처음에 "태양광 발전량이 높을때 온도가 높다"고 생각했다. 내 생각이 맞는지 데이터로 확인하고 싶었다.
 
 ## 데이터
-- 출처(주소):https://www.data.go.kr/data/15103243/openapi.do
+- 출처(주소):https://www.koenergy.kr/kosep/gv/nf/dt/nfdt21/main.do?menuCd=FN0912020217&utm_source=chatgpt.com
 - 기간·행 수·열 수:
 - 사용한 열:
 - 개인 단위 정보 없음 확인: 예
