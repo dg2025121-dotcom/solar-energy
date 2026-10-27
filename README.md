@@ -14,7 +14,7 @@
 
 ## 데이터
 - 출처(주소):https://www.koenergy.kr/kosep/gv/nf/dt/nfdt21/main.do?menuCd=FN0912020217&utm_source=chatgpt.com
-- 기간·행 수·열 수:
+- 기간·행 수·열 수:2026/09/30,행 7개,열 
 - 사용한 열:
 - 개인 단위 정보 없음 확인: 예
 
