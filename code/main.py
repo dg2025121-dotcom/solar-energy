@@ -1,6 +1,6 @@
 """
 ☀️ 태양광 발전량은 정말 기온이 가장 높은 시간대에 가장 많을까?
-- 데이터: 한국남동발전 시간대별 태양광 발전실적 CSV
+- 데이터: 한국남동발전 시간대별 태양광 발전실적 CSV (GitHub 원본 주소에서 자동 로드, 업로드도 가능)
 - 기온: Open-Meteo 자동 조회 또는 기상청 CSV 업로드 (발전 CSV에는 기온이 없음)
 
 실행:  pip install streamlit pandas altair requests
@@ -16,7 +16,12 @@ import pandas as pd
 import requests
 import streamlit as st
 
-DEFAULT_CSV = "한국남동발전_시간대별_태양광_발전실적.csv"
+DATA_URL = (
+    "https://raw.githubusercontent.com/dg2025121-dotcom/solar-energy/refs/heads/main/data/"
+    "%ED%95%9C%EA%B5%AD%EB%82%A8%EB%8F%99%EB%B0%9C%EC%A0%84_%EC%8B%9C%EA%B0%84%EB%8C%80%EB%B3%84_"
+    "%ED%83%9C%EC%96%91%EA%B4%91_%EB%B0%9C%EC%A0%84%EC%8B%A4%EC%A0%81.csv"
+)
+DEFAULT_CSV = "한국남동발전_시간대별_태양광_발전실적.csv"  # 같은 폴더에 있으면 GitHub 실패 시 대체 사용
 
 # 기온 조회용 대표 지점 (위도, 경도)
 LOCATIONS = {
@@ -47,6 +52,13 @@ def read_csv_bytes(raw: bytes) -> pd.DataFrame:
         except UnicodeDecodeError:
             continue
     raise ValueError("CSV 인코딩을 읽을 수 없습니다 (UTF-8 / CP949 지원).")
+
+
+@st.cache_data(show_spinner="GitHub에서 발전 데이터를 불러오는 중...", ttl=3600)
+def fetch_url(url: str) -> bytes:
+    r = requests.get(url, timeout=30)
+    r.raise_for_status()
+    return r.content
 
 
 @st.cache_data(show_spinner=False)
@@ -129,15 +141,24 @@ def main():
     # ── 사이드바: 데이터 선택
     with st.sidebar:
         st.header("1. 발전 데이터")
-        up = st.file_uploader("발전실적 CSV", type="csv")
+        origin = st.radio("데이터 출처", ["GitHub (기본)", "CSV 업로드"])
         local = Path(__file__).parent / DEFAULT_CSV
-        if up is not None:
-            raw = up.getvalue()
-        elif local.exists():
-            raw = local.read_bytes()
-            st.caption(f"기본 파일 사용: {DEFAULT_CSV}")
+        raw = None
+        if origin == "CSV 업로드":
+            up = st.file_uploader("발전실적 CSV", type="csv")
+            if up is not None:
+                raw = up.getvalue()
         else:
-            st.info("발전실적 CSV를 업로드하세요.")
+            try:
+                raw = fetch_url(DATA_URL)
+                st.caption("GitHub 원본 CSV를 사용 중입니다.")
+            except Exception as e:
+                if local.exists():
+                    raw = local.read_bytes()
+                    st.warning(f"GitHub 로딩 실패({e}). 같은 폴더의 {DEFAULT_CSV}로 대체합니다.")
+                else:
+                    st.error(f"GitHub 로딩 실패: {e}\n'CSV 업로드'를 선택해 파일을 올려 주세요.")
+        if raw is None:
             st.stop()
         try:
             long = load_generation(raw)
