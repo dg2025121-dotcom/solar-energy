@@ -305,6 +305,11 @@ def main():
     has_temp = temp_df is not None and w["temp"].notna().any()
     wt = w.dropna(subset=["temp"]) if has_temp else w
 
+    # 분석용 표: 일자 · 시 · 발전량 · 기온 (선택한 발전소 합산, 1~24시 전체)
+    analysis = (merged[["일자", "hour", "kwh", "temp"]]
+                .rename(columns={"hour": "시", "kwh": "발전량(kWh)", "temp": "기온(℃)"})
+                .sort_values(["일자", "시"]).reset_index(drop=True))
+
     st.markdown(f"**분석 대상**: {', '.join(plants)} · {n_days}일 · {h0}~{h1}시"
                 + (f" · 기온: {temp_note}" if has_temp else ""))
 
@@ -328,6 +333,20 @@ def main():
         st.dataframe(ov, hide_index=True)
         st.caption(f"빈 값이 있는 열: {int((ov['빈 값 개수'] > 0).sum())}개 / 전체 {len(ov)}개 열. "
                    "행 하나는 '발전기 1대 × 하루'이고, 1시~24시 열이 시간대별 발전량(kWh)입니다.")
+
+        st.subheader("분석용 데이터 개요 (일자 · 시 · 발전량 · 기온)")
+        st.caption("사이드바에서 고른 발전소를 합산해 '어느 날의 몇 시'를 한 행으로 만든 표입니다. 이후 모든 그래프의 입력입니다.")
+        ca = st.columns(3)
+        ca[0].metric("행 개수", fmt(analysis.shape[0]))
+        ca[1].metric("열 개수", fmt(analysis.shape[1]))
+        ca[2].metric("기온이 있는 행", f"{fmt(analysis['기온(℃)'].notna().sum())} / {fmt(len(analysis))}")
+        st.dataframe(pd.DataFrame({
+            "열 이름": analysis.columns,
+            "자료형": analysis.dtypes.astype(str).values,
+            "빈 값 개수": analysis.isna().sum().values,
+            "설명": ["날짜", "시각(1~24시, N시 = (N-1)~N시 구간)", "선택 발전소 합산 발전량",
+                     "같은 시각의 기온 (기온 데이터를 불러오지 않으면 비어 있음)"],
+        }), hide_index=True)
 
         st.subheader("결측치·이상치 처리 내용")
         mm = log["n_total_mismatch"]
@@ -567,13 +586,13 @@ def main():
 
     # ═════════ 탭3: 분석용 데이터 ═════════
     with tab3:
-        st.subheader("분석에 사용된 시간별 데이터")
-        table = merged.drop(columns=["ts"]).rename(columns={"hour": "시", "kwh": "발전량(kWh)", "temp": "기온(℃)"})
-        st.dataframe(table)
+        st.subheader("분석용 데이터 (일자 · 시 · 발전량 · 기온)")
+        table = analysis.assign(일자=analysis["일자"].dt.strftime("%Y-%m-%d"))
+        st.dataframe(table, hide_index=True)
         st.download_button("CSV로 내려받기", table.to_csv(index=False).encode("utf-8-sig"),
-                           "태양광_기온_분석데이터.csv", "text/csv")
+                           "태양광_일자_시_발전량_기온.csv", "text/csv")
         st.subheader("발전소별 자료 일수")
-        st.dataframe(coverage.rename("자료 일수").reset_index())
+        st.dataframe(coverage.rename("자료 일수").reset_index(), hide_index=True)
 
 
 if __name__ == "__main__":
