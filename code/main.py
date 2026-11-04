@@ -1,3 +1,8 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+
 st.markdown("**전처리 전후 행 수**")
 process_table = pd.DataFrame({
     "처리 단계": [
