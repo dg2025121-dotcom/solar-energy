@@ -137,6 +137,7 @@ def parse_temp_csv(raw: bytes) -> pd.DataFrame:
         raise ValueError(f"시각/기온 컬럼을 찾지 못했습니다. 현재 컬럼: {list(df.columns)}")
     out = pd.DataFrame({"ts": pd.to_datetime(df[time_col], errors="coerce"),
                         "temp": pd.to_numeric(df[temp_col], errors="coerce")}).dropna()
+    out["ts"] = out["ts"].astype("datetime64[ns]")
     return out.groupby("ts", as_index=False)["temp"].mean()  # 지점이 여러 개면 평균
 
 
@@ -150,7 +151,7 @@ def fetch_open_meteo(lat: float, lon: float, start: str, end: str) -> pd.DataFra
     )
     r.raise_for_status()
     h = r.json()["hourly"]
-    return pd.DataFrame({"ts": pd.to_datetime(h["time"]),
+    return pd.DataFrame({"ts": pd.to_datetime(h["time"]).astype("datetime64[ns]"),
                          "temp": h["temperature_2m"],
                          "rad": h["shortwave_radiation"]})
 
@@ -164,7 +165,7 @@ def aggregate(long: pd.DataFrame, plants: list, start, end):
     sub_full = sub[sub["일자"].isin(full_days)]
     hourly = sub_full.groupby(["일자", "hour"], as_index=False)["kwh"].sum()
     # 'N시' = (N-1)~N시 구간 발전량으로 보고 N:00 시점 기온과 매칭
-    hourly["ts"] = hourly["일자"] + pd.to_timedelta(hourly["hour"], unit="h")
+    hourly["ts"] = (hourly["일자"] + pd.to_timedelta(hourly["hour"], unit="h")).astype("datetime64[ns]")
     info = {"n_sel": len(sub), "n_sel_full": len(sub_full)}
     return hourly, len(full_days), info
 
@@ -190,6 +191,25 @@ def describe_r(r: float) -> str:
 
 def fmt(n) -> str:
     return f"{int(n):,}"
+
+
+def ax(field, typ, title, kind="x", **kw):
+    """축 인코딩 (열 이름을 shorthand 문자열로 해석하지 않도록 field/type을 명시)"""
+    cls = alt.Y if kind == "y" else alt.X
+    return cls(field=field, type=typ, title=title, **kw)
+
+
+def tip(field, typ, title, fmt_=None):
+    kw = {"format": fmt_} if fmt_ else {}
+    return alt.Tooltip(field=field, type=typ, title=title, **kw)
+
+
+def show(chart, title, height=300):
+    """그래프 하나가 실패해도 앱 전체가 멈추지 않도록 보호"""
+    try:
+        st.altair_chart(chart.properties(title=title, height=height, width="container"))
+    except Exception as e:  # noqa: BLE001
+        st.error(f"'{title}' 그래프를 그리지 못했습니다: {type(e).__name__}: {e}")
 
 
 def finding(text: str, evidence: str):
@@ -351,35 +371,32 @@ def main():
 
     # ═════════ 탭1: 발전 패턴 (기온 없이도 가능) ═════════
     with tab1:
-        avg = merged.groupby("hour", as_index=False)["kwh"].mean().rename(columns={"kwh": "평균 발전량(kWh)"})
+        avg = merged.groupby("hour", as_index=False)["kwh"].mean().rename(columns={"kwh": "avg_kwh"})
         gp = peak_hours(w, "kwh")
         total_all, total_win = merged["kwh"].sum(), w["kwh"].sum()
         c1, c2 = st.columns(2)
         with c1:
-            st.altair_chart(
-                alt.Chart(avg).mark_bar().encode(
-                    x=alt.X("hour:O", title="시각(시)"),
-                    y=alt.Y("평균 발전량(kWh):Q", title="평균 발전량 (kWh)"),
-                    tooltip=["hour", alt.Tooltip("평균 발전량(kWh):Q", format=",.1f")]
-                ).properties(title="그래프 1. 시간대별 평균 발전량", height=300),
-                theme="streamlit")
-            ph = int(avg.loc[avg["평균 발전량(kWh)"].idxmax(), "hour"])
-            pv = float(avg["평균 발전량(kWh)"].max())
+            show(alt.Chart(avg).mark_bar().encode(
+                x=ax("hour", "ordinal", "시각(시)"),
+                y=ax("avg_kwh", "quantitative", "평균 발전량 (kWh)", kind="y"),
+                tooltip=[tip("hour", "ordinal", "시각(시)"),
+                         tip("avg_kwh", "quantitative", "평균 발전량(kWh)", ",.1f")]),
+                "그래프 1. 시간대별 평균 발전량")
+            ph = int(avg.loc[avg["avg_kwh"].idxmax(), "hour"])
+            pv = float(avg["avg_kwh"].max())
             finding(f"발전량은 {ph}시 무렵에 가장 많고, 선택한 낮 시간대({h0}~{h1}시)에 집중됩니다.",
-                    f"{ph}시 평균 {pv:,.0f} kWh (24시간 평균 {avg['평균 발전량(kWh)'].mean():,.0f} kWh의 "
-                    f"{pv / max(avg['평균 발전량(kWh)'].mean(), 1e-9):.1f}배) · {h0}~{h1}시 구간이 하루 발전량의 "
+                    f"{ph}시 평균 {pv:,.0f} kWh (24시간 평균 {avg['avg_kwh'].mean():,.0f} kWh의 "
+                    f"{pv / max(avg['avg_kwh'].mean(), 1e-9):.1f}배) · {h0}~{h1}시 구간이 하루 발전량의 "
                     f"{total_win / max(total_all, 1e-9):.1%}")
         with c2:
-            dist = gp.value_counts().sort_index().rename_axis("hour").reset_index(name="일수")
-            st.altair_chart(
-                alt.Chart(dist).mark_bar(color="#f59e0b").encode(
-                    x=alt.X("hour:O", title="그날 발전량이 가장 많았던 시각(시)"),
-                    y=alt.Y("일수:Q", title="일수 (일)"),
-                    tooltip=["hour", "일수"]
-                ).properties(title="그래프 2. 일별 발전량 최대 시각의 분포", height=300),
-                theme="streamlit")
-            mode_h = int(dist.loc[dist["일수"].idxmax(), "hour"])
-            mode_n = int(dist["일수"].max())
+            dist = gp.value_counts().sort_index().rename_axis("hour").reset_index(name="days")
+            show(alt.Chart(dist).mark_bar(color="#f59e0b").encode(
+                x=ax("hour", "ordinal", "그날 발전량이 가장 많았던 시각(시)"),
+                y=ax("days", "quantitative", "일수 (일)", kind="y"),
+                tooltip=[tip("hour", "ordinal", "시각(시)"), tip("days", "quantitative", "일수")]),
+                "그래프 2. 일별 발전량 최대 시각의 분포")
+            mode_h = int(dist.loc[dist["days"].idxmax(), "hour"])
+            mode_n = int(dist["days"].max())
             finding(f"날마다 발전 최대 시각은 {mode_h}시가 가장 흔하지만 날씨에 따라 달라집니다.",
                     f"{len(gp)}일 중 {mode_n}일({mode_n / len(gp):.0%})이 {mode_h}시 · "
                     f"범위 {int(gp.min())}~{int(gp.max())}시 · 중앙값 {gp.median():.0f}시")
@@ -396,6 +413,11 @@ def main():
             same = int((pk["gen"] == pk["temp"]).sum())
             near = int(((pk["gen"] - pk["temp"]).abs() <= 1).sum())
             lag_med = float((pk["temp"] - pk["gen"]).median())
+            # 그래프용 단순 복사본 (영문 열 이름, 날짜는 문자열)
+            cd = pd.DataFrame({"date": wt["일자"].dt.strftime("%Y-%m-%d").values,
+                               "hour": wt["hour"].astype(int).values,
+                               "temp": wt["temp"].astype(float).values,
+                               "kwh": wt["kwh"].astype(float).values})
 
             m = st.columns(4)
             m[0].metric("발전량 최대 시각(중앙값)", f"{pk['gen'].median():.0f}시")
@@ -413,22 +435,25 @@ def main():
             st.success(f"**결과 요약** — {verdict}")
 
             # 그래프 3: 정규화 일주기 패턴
-            prof = wt.groupby("hour", as_index=False).agg(kwh=("kwh", "mean"), temp=("temp", "mean"))
+            prof = cd.groupby("hour", as_index=False).agg(kwh=("kwh", "mean"), temp=("temp", "mean"))
             rng = prof["temp"].max() - prof["temp"].min()
-            prof["발전량 (최대=1)"] = prof["kwh"] / prof["kwh"].max() if prof["kwh"].max() > 0 else 0
-            prof["기온 (최저=0, 최고=1)"] = (prof["temp"] - prof["temp"].min()) / rng if rng > 0 else 0
-            pl = prof.melt("hour", ["발전량 (최대=1)", "기온 (최저=0, 최고=1)"], "지표", "값")
-            st.altair_chart(
-                alt.Chart(pl).mark_line(point=True).encode(
-                    x=alt.X("hour:O", title="시각(시)"),
-                    y=alt.Y("값:Q", title="정규화 값 (0~1)", scale=alt.Scale(domain=[0, 1.05])),
-                    color=alt.Color("지표:N", title="지표"),
-                    tooltip=["hour", "지표", alt.Tooltip("값:Q", format=".2f")]
-                ).properties(title="그래프 3. 하루 중 평균 발전량과 평균 기온의 모양 비교", height=320),
-                theme="streamlit")
+            kmax = prof["kwh"].max()
+            prof["gen_n"] = prof["kwh"] / kmax if kmax > 0 else 0.0
+            prof["temp_n"] = (prof["temp"] - prof["temp"].min()) / rng if rng > 0 else 0.0
+            pl = pd.concat([
+                pd.DataFrame({"hour": prof["hour"], "series": "발전량 (최대=1)", "value": prof["gen_n"]}),
+                pd.DataFrame({"hour": prof["hour"], "series": "기온 (최저=0, 최고=1)", "value": prof["temp_n"]}),
+            ], ignore_index=True)
+            show(alt.Chart(pl).mark_line(point=True).encode(
+                x=ax("hour", "ordinal", "시각(시)"),
+                y=ax("value", "quantitative", "정규화 값 (0~1)", kind="y", scale=alt.Scale(domain=[0, 1.05])),
+                color=alt.Color(field="series", type="nominal", title="지표"),
+                tooltip=[tip("hour", "ordinal", "시각(시)"), tip("series", "nominal", "지표"),
+                         tip("value", "quantitative", "값", ".2f")]),
+                "그래프 3. 하루 중 평균 발전량과 평균 기온의 모양 비교", height=320)
             g_h = int(prof.loc[prof["kwh"].idxmax(), "hour"])
             t_h = int(prof.loc[prof["temp"].idxmax(), "hour"])
-            t_at_g = float(prof.loc[prof["hour"] == g_h, "기온 (최저=0, 최고=1)"].iloc[0])
+            t_at_g = float(prof.loc[prof["hour"] == g_h, "temp_n"].iloc[0])
             gap = t_h - g_h
             rel = (f"기온이 발전 피크보다 {gap}시간 늦게 최고가 됩니다" if gap > 0 else
                    "기온과 발전량이 같은 시각에 최고가 됩니다" if gap == 0 else
@@ -438,51 +463,50 @@ def main():
                     f"발전 최대 시각의 기온은 하루 중 최저=0~최고=1 기준 {t_at_g:.2f}")
 
             # 그래프 4: 피크 시각 차이
-            diff = (pk["temp"] - pk["gen"]).value_counts().sort_index().rename_axis("차이(시간)").reset_index(name="일수")
-            st.altair_chart(
-                alt.Chart(diff).mark_bar(color="#ef4444").encode(
-                    x=alt.X("차이(시간):O", title="기온 최고 시각 − 발전 최대 시각 (시간)"),
-                    y=alt.Y("일수:Q", title="일수 (일)"),
-                    tooltip=["차이(시간)", "일수"]
-                ).properties(title="그래프 4. 두 피크 시각의 차이 분포 (0이면 같은 시각)", height=300),
-                theme="streamlit")
-            top = diff.loc[diff["일수"].idxmax()]
-            finding(f"가장 흔한 차이는 {int(top['차이(시간)']):+d}시간이며, 두 피크가 정확히 같은 날은 {same / n:.0%}입니다.",
+            diff = ((pk["temp"] - pk["gen"]).astype(int).value_counts().sort_index()
+                    .rename_axis("gap").reset_index(name="days"))
+            show(alt.Chart(diff).mark_bar(color="#ef4444").encode(
+                x=ax("gap", "ordinal", "기온 최고 시각 − 발전 최대 시각 (시간)"),
+                y=ax("days", "quantitative", "일수 (일)", kind="y"),
+                tooltip=[tip("gap", "ordinal", "차이(시간)"), tip("days", "quantitative", "일수")]),
+                "그래프 4. 두 피크 시각의 차이 분포 (0이면 같은 시각)")
+            top = diff.loc[diff["days"].idxmax()]
+            finding(f"가장 흔한 차이는 {int(top['gap']):+d}시간이며, 두 피크가 정확히 같은 날은 {same / n:.0%}입니다.",
                     f"같은 시각 {same}/{n}일 · ±1시간 이내 {near}/{n}일 · 차이 중앙값 {lag_med:+.0f}시간 · "
-                    f"최빈 차이 {int(top['차이(시간)']):+d}시간({int(top['일수'])}일)")
+                    f"최빈 차이 {int(top['gap']):+d}시간({int(top['days'])}일)")
 
-            # 그래프 5: 산점도
-            r_p, r_s = corr_safe(wt["kwh"], wt["temp"]), corr_safe(wt["kwh"], wt["temp"], "spearman")
-            slope = float(np.polyfit(wt["temp"], wt["kwh"], 1)[0]) if wt["temp"].std() > 0 else float("nan")
-            base = alt.Chart(wt).encode(
-                x=alt.X("temp:Q", title="기온 (℃)", scale=alt.Scale(zero=False)),
-                y=alt.Y("kwh:Q", title="발전량 (kWh)"))
+            # 그래프 5: 산점도 + 추세선
+            r_p, r_s = corr_safe(cd["kwh"], cd["temp"]), corr_safe(cd["kwh"], cd["temp"], "spearman")
+            slope = float(np.polyfit(cd["temp"], cd["kwh"], 1)[0]) if cd["temp"].std() > 0 else float("nan")
+            base = alt.Chart(cd).encode(
+                x=ax("temp", "quantitative", "기온 (℃)", scale=alt.Scale(zero=False)),
+                y=ax("kwh", "quantitative", "발전량 (kWh)", kind="y"))
             pts = base.mark_circle(size=60, opacity=0.6).encode(
-                color=alt.Color("hour:O", title="시각(시)", scale=alt.Scale(scheme="turbo")),
-                tooltip=["일자:T", "hour", alt.Tooltip("temp:Q", format=".1f"), alt.Tooltip("kwh:Q", format=",.0f")])
+                color=alt.Color(field="hour", type="ordinal", title="시각(시)", scale=alt.Scale(scheme="turbo")),
+                tooltip=[tip("date", "nominal", "날짜"), tip("hour", "ordinal", "시각(시)"),
+                         tip("temp", "quantitative", "기온(℃)", ".1f"), tip("kwh", "quantitative", "발전량(kWh)", ",.0f")])
             trend = base.transform_regression("temp", "kwh").mark_line(color="black")
-            st.altair_chart((pts + trend).properties(
-                title="그래프 5. 기온과 시간별 발전량의 관계 (점 = 하루 중 한 시각, 검은 선 = 추세선)", height=340),
-                theme="streamlit")
+            show(pts + trend, "그래프 5. 기온과 시간별 발전량의 관계 (점 = 하루 중 한 시각, 검은 선 = 추세선)", height=340)
             finding(f"기온과 발전량(시간 단위)은 {describe_r(r_p)} 다만 기온이 발전량을 만든다는 뜻은 아닙니다.",
-                    f"피어슨 r = {r_p:.2f} · 스피어만 ρ = {r_s:.2f} · 추세선 기울기 {slope:+,.0f} kWh/℃ · 표본 {fmt(len(wt))}개 시각")
+                    f"피어슨 r = {r_p:.2f} · 스피어만 ρ = {r_s:.2f} · 추세선 기울기 {slope:+,.0f} kWh/℃ · 표본 {fmt(len(cd))}개 시각")
 
             cl, cr = st.columns(2)
             with cl:
                 try:
-                    bins = pd.qcut(wt["temp"], 5, duplicates="drop")
-                    b = wt.assign(bin=bins).groupby("bin", observed=True).agg(
-                        평균발전량=("kwh", "mean"), 시간수=("kwh", "size")).reset_index()
-                    b["구간"] = b["bin"].apply(lambda i: f"{i.left:.1f}~{i.right:.1f}℃")
-                    st.altair_chart(
-                        alt.Chart(b).mark_bar().encode(
-                            x=alt.X("구간:N", sort=list(b["구간"]), title="기온 구간 (℃, 5분위)"),
-                            y=alt.Y("평균발전량:Q", title="평균 발전량 (kWh)"),
-                            tooltip=["구간", alt.Tooltip("평균발전량:Q", format=",.1f"), "시간수"]
-                        ).properties(title="그래프 6. 기온 구간별 평균 발전량", height=300),
-                        theme="streamlit")
-                    v0, v1 = float(b["평균발전량"].iloc[0]), float(b["평균발전량"].iloc[-1])
-                    mono = bool(np.all(np.diff(b["평균발전량"].values) > 0))
+                    bins = pd.qcut(cd["temp"], 5, duplicates="drop")
+                    b = cd.assign(bin=bins).groupby("bin", observed=True).agg(
+                        avg_kwh=("kwh", "mean"), n=("kwh", "size")).reset_index()
+                    b["label"] = b["bin"].apply(lambda i: f"{i.left:.1f}~{i.right:.1f}℃")
+                    b = b[["label", "avg_kwh", "n"]]
+                    show(alt.Chart(b).mark_bar().encode(
+                        x=ax("label", "nominal", "기온 구간 (℃, 5분위)", sort=list(b["label"])),
+                        y=ax("avg_kwh", "quantitative", "평균 발전량 (kWh)", kind="y"),
+                        tooltip=[tip("label", "nominal", "기온 구간"),
+                                 tip("avg_kwh", "quantitative", "평균 발전량(kWh)", ",.1f"),
+                                 tip("n", "quantitative", "시각 수")]),
+                        "그래프 6. 기온 구간별 평균 발전량")
+                    v0, v1 = float(b["avg_kwh"].iloc[0]), float(b["avg_kwh"].iloc[-1])
+                    mono = bool(np.all(np.diff(b["avg_kwh"].values) > 0))
                     if v1 > v0 * 1.1:
                         txt = "기온 구간이 높을수록 평균 발전량이 많습니다" + (" (구간마다 계속 증가)." if mono else ".")
                     elif v1 < v0 * 0.9:
@@ -490,45 +514,44 @@ def main():
                     else:
                         txt = "기온 구간에 따른 평균 발전량 차이가 크지 않습니다."
                     finding(txt + " (일사량·시각 효과가 섞인 값)",
-                            f"최저 구간 {b['구간'].iloc[0]} {v0:,.0f} kWh → 최고 구간 {b['구간'].iloc[-1]} {v1:,.0f} kWh"
+                            f"최저 구간 {b['label'].iloc[0]} {v0:,.0f} kWh → 최고 구간 {b['label'].iloc[-1]} {v1:,.0f} kWh"
                             + (f" ({v1 / v0:.1f}배)" if v0 > 0 else ""))
                 except ValueError:
                     st.caption("기온 값의 변동이 적어 구간을 나눌 수 없습니다.")
             with cr:
-                rows = [{"hour": h, "상관계수": corr_safe(g["kwh"], g["temp"])} for h, g in wt.groupby("hour")]
+                rows = [{"hour": int(h), "r": corr_safe(g["kwh"], g["temp"])} for h, g in cd.groupby("hour")]
                 hr = pd.DataFrame(rows).dropna()
                 if hr.empty:
                     st.caption("같은 시각끼리의 상관을 계산할 데이터가 부족합니다.")
                 else:
-                    st.altair_chart(
-                        alt.Chart(hr).mark_bar().encode(
-                            x=alt.X("hour:O", title="시각(시)"),
-                            y=alt.Y("상관계수:Q", title="날짜별 기온↔발전량 상관계수", scale=alt.Scale(domain=[-1, 1])),
-                            tooltip=["hour", alt.Tooltip("상관계수:Q", format=".2f")]
-                        ).properties(title="그래프 7. 같은 시각끼리 비교한 기온↔발전량 상관", height=300),
-                        theme="streamlit")
-                    mean_r = float(hr["상관계수"].mean())
-                    pos_n = int((hr["상관계수"] > 0).sum())
+                    show(alt.Chart(hr).mark_bar().encode(
+                        x=ax("hour", "ordinal", "시각(시)"),
+                        y=ax("r", "quantitative", "날짜별 기온↔발전량 상관계수", kind="y",
+                             scale=alt.Scale(domain=[-1, 1])),
+                        tooltip=[tip("hour", "ordinal", "시각(시)"), tip("r", "quantitative", "상관계수", ".2f")]),
+                        "그래프 7. 같은 시각끼리 비교한 기온↔발전량 상관")
+                    mean_r = float(hr["r"].mean())
+                    pos_n = int((hr["r"] > 0).sum())
                     finding(f"같은 시각끼리 비교하면 기온과 발전량은 {describe_r(mean_r)} "
                             "(같은 시각 비교에서 나타나는 관계는 대체로 맑은 날씨 효과입니다).",
                             f"시각별 평균 r = {mean_r:.2f} · 양(+)인 시각 {pos_n}/{len(hr)}개 · "
-                            f"범위 {hr['상관계수'].min():.2f} ~ {hr['상관계수'].max():.2f}")
+                            f"범위 {hr['r'].min():.2f} ~ {hr['r'].max():.2f}")
 
             # 그래프 8: 일 단위
-            daily = wt.groupby("일자", as_index=False).agg(발전량=("kwh", "sum"), 평균기온=("temp", "mean"))
+            daily = cd.groupby("date", as_index=False).agg(kwh=("kwh", "sum"), temp=("temp", "mean"))
             dbase = alt.Chart(daily).encode(
-                x=alt.X("평균기온:Q", title="분석 시간대 평균기온 (℃)", scale=alt.Scale(zero=False)),
-                y=alt.Y("발전량:Q", title=f"{h0}~{h1}시 발전량 합계 (kWh)"))
+                x=ax("temp", "quantitative", "분석 시간대 평균기온 (℃)", scale=alt.Scale(zero=False)),
+                y=ax("kwh", "quantitative", f"{h0}~{h1}시 발전량 합계 (kWh)", kind="y"))
             dpts = dbase.mark_circle(size=70, opacity=0.7).encode(
-                tooltip=["일자:T", alt.Tooltip("평균기온:Q", format=".1f"), alt.Tooltip("발전량:Q", format=",.0f")])
-            dtrend = dbase.transform_regression("평균기온", "발전량").mark_line(color="black")
-            st.altair_chart((dpts + dtrend).properties(
-                title="그래프 8. 날짜별 평균기온과 하루 발전량 (점 = 하루)", height=320), theme="streamlit")
-            r_d = corr_safe(daily["발전량"], daily["평균기온"])
-            hot, cold = daily.loc[daily["평균기온"].idxmax()], daily.loc[daily["평균기온"].idxmin()]
+                tooltip=[tip("date", "nominal", "날짜"), tip("temp", "quantitative", "평균기온(℃)", ".1f"),
+                         tip("kwh", "quantitative", "발전량(kWh)", ",.0f")])
+            dtrend = dbase.transform_regression("temp", "kwh").mark_line(color="black")
+            show(dpts + dtrend, "그래프 8. 날짜별 평균기온과 하루 발전량 (점 = 하루)", height=320)
+            r_d = corr_safe(daily["kwh"], daily["temp"])
+            hot, cold = daily.loc[daily["temp"].idxmax()], daily.loc[daily["temp"].idxmin()]
             finding(f"날짜 단위로 보면 평균기온과 하루 발전량은 {describe_r(r_d)}",
-                    f"일 단위 r = {r_d:.2f} (n = {len(daily)}일) · 가장 따뜻한 날 {hot['일자']:%m/%d}({hot['평균기온']:.1f}℃) "
-                    f"{hot['발전량']:,.0f} kWh · 가장 쌀쌀한 날 {cold['일자']:%m/%d}({cold['평균기온']:.1f}℃) {cold['발전량']:,.0f} kWh")
+                    f"일 단위 r = {r_d:.2f} (n = {len(daily)}일) · 가장 따뜻한 날 {hot['date'][5:].replace('-', '/')}({hot['temp']:.1f}℃) "
+                    f"{hot['kwh']:,.0f} kWh · 가장 쌀쌀한 날 {cold['date'][5:].replace('-', '/')}({cold['temp']:.1f}℃) {cold['kwh']:,.0f} kWh")
 
             with st.expander("해석할 때 주의할 점"):
                 st.markdown(
@@ -545,9 +568,9 @@ def main():
     # ═════════ 탭3: 분석용 데이터 ═════════
     with tab3:
         st.subheader("분석에 사용된 시간별 데이터")
-        show = merged.drop(columns=["ts"]).rename(columns={"hour": "시", "kwh": "발전량(kWh)", "temp": "기온(℃)"})
-        st.dataframe(show)
-        st.download_button("CSV로 내려받기", show.to_csv(index=False).encode("utf-8-sig"),
+        table = merged.drop(columns=["ts"]).rename(columns={"hour": "시", "kwh": "발전량(kWh)", "temp": "기온(℃)"})
+        st.dataframe(table)
+        st.download_button("CSV로 내려받기", table.to_csv(index=False).encode("utf-8-sig"),
                            "태양광_기온_분석데이터.csv", "text/csv")
         st.subheader("발전소별 자료 일수")
         st.dataframe(coverage.rename("자료 일수").reset_index())
